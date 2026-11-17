@@ -26,7 +26,19 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run backend tests
-        run: python -m pytest -q tests/test_api.py
+        run: |
+          set +e
+          python -m pytest -vv tests/test_api.py 2>&1 | tee /tmp/formpilot-pytest.log
+          test_status=${PIPESTATUS[0]}
+          if [ "$test_status" -ne 0 ]; then
+            tail -n 25 /tmp/formpilot-pytest.log | while IFS= read -r line; do
+              escaped=${line//'%'/'%25'}
+              escaped=${escaped//$'\r'/'%0D'}
+              escaped=${escaped//$'\n'/'%0A'}
+              echo "::error title=Backend test output::$escaped"
+            done
+          fi
+          exit "$test_status"
 
       - uses: actions/setup-node@v4
         with:
