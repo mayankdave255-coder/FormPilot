@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     environment:
       APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: ${DATABASE_URL:-}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Set AUTH_SECRET_KEY to a random value of at least 32 characters}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}

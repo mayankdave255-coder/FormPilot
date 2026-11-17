@@ -28,7 +28,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
-from . import auth
+from . import auth, database
 
 load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,13 +49,10 @@ _PERSIST_LOCK = threading.Lock()
 
 
 def persist_session(session: dict[str, Any]) -> None:
-    path = SESSION_STORE_DIR / f"{session['id']}.json"
-    temp = path.with_suffix(".tmp")
     try:
         with _PERSIST_LOCK:
-            temp.write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
-            temp.replace(path)
-    except (OSError, TypeError) as exc:
+            database.save_application_session(session)
+    except Exception as exc:
         print(f"session_persist_error id={session.get('id','')[:8]} error={type(exc).__name__}")
 
 
@@ -65,16 +62,24 @@ def persist_all_sessions() -> None:
 
 
 def restore_sessions() -> None:
+    # Import legacy JSON sessions once when upgrading from the file-backed version.
+    restored = database.list_application_sessions()
+    known_ids = {session.get("id") for session in restored}
     for path in SESSION_STORE_DIR.glob("*.json"):
         try:
             session = json.loads(path.read_text(encoding="utf-8"))
-            if not session.get("owner_id") or not session.get("id"):
-                continue
-            SESSIONS[session["id"]] = session
-            for document_id in session.get("documents", {}):
-                DOC_INDEX[document_id] = (session["id"], document_id)
+            if session.get("owner_id") and session.get("id") and session["id"] not in known_ids:
+                database.save_application_session(session)
+                restored.append(session)
+                known_ids.add(session["id"])
         except (OSError, json.JSONDecodeError, KeyError) as exc:
             print(f"session_restore_error file={path.name} error={type(exc).__name__}")
+    for session in restored:
+        if not session.get("owner_id") or not session.get("id"):
+            continue
+        SESSIONS[session["id"]] = session
+        for document_id in session.get("documents", {}):
+            DOC_INDEX[document_id] = (session["id"], document_id)
 
 
 restore_sessions()
@@ -291,6 +296,7 @@ def cleanup_expired() -> None:
             for document_id in session["documents"]:
                 DOC_INDEX.pop(document_id, None)
             SESSIONS.pop(session_id, None)
+            database.delete_application_session(session_id)
             (SESSION_STORE_DIR/f"{session_id}.json").unlink(missing_ok=True)
 
 
@@ -475,7 +481,7 @@ def validation_for(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 @app.get("/api/v1/health")
 def health():
-    return {"status":"ok","app":"FormPilot","version":"1.0.0","providers":{"gemini":bool(GEMINI_API_KEY),"sarvam":bool(SARVAM_API_KEY)},"mode":"live" if GEMINI_API_KEY or SARVAM_API_KEY else "demo","retention_hours":SESSION_TTL_HOURS}
+    return {"status":"ok","app":"FormPilot","version":"1.0.0","database":{"status":"connected" if database.ping() else "unavailable","backend":database.backend_name()},"providers":{"gemini":bool(GEMINI_API_KEY),"sarvam":bool(SARVAM_API_KEY)},"mode":"live" if GEMINI_API_KEY or SARVAM_API_KEY else "demo","retention_hours":SESSION_TTL_HOURS}
 
 
 @app.post("/api/v1/sessions")
@@ -510,6 +516,7 @@ def delete_session(session_id: str):
     for doc_id in s["documents"]: DOC_INDEX.pop(doc_id,None)
     shutil.rmtree(DATA_DIR/session_id,ignore_errors=True)
     SESSIONS.pop(session_id,None)
+    database.delete_application_session(session_id)
     (SESSION_STORE_DIR/f"{session_id}.json").unlink(missing_ok=True)
     return {"deleted":True,"session_id":session_id}
 

@@ -5,7 +5,7 @@ import pytest
 import uuid
 from fastapi.testclient import TestClient
 
-from backend import main
+from backend import database, main
 
 client = TestClient(main.app)
 
@@ -40,13 +40,18 @@ def test_signup_validation_and_login(signed_in_user):
     assert client.get("/api/v1/auth/me").json()["user"]["email"] == signed_in_user["email"]
 
 
-def test_session_data_is_persisted(sid):
-    path = main.SESSION_STORE_DIR / f"{sid}.json"
-    assert path.exists()
-    saved = path.read_text(encoding="utf-8")
-    assert '"owner_id"' in saved
+def test_database_health_and_session_persistence(sid):
+    health = client.get("/api/v1/health").json()
+    assert health["database"]["status"] == "connected"
+    assert health["database"]["backend"] in {"sqlite", "postgresql"}
+    saved = database.get_application_session(sid)
+    assert saved and saved["owner_id"]
+    main.SESSIONS.pop(sid)
+    main.restore_sessions()
+    assert sid in main.SESSIONS
+    assert client.get(f"/api/v1/sessions/{sid}").status_code == 200
     client.delete(f"/api/v1/sessions/{sid}")
-    assert not path.exists()
+    assert database.get_application_session(sid) is None
 
 
 def make_pdf(lines: list[str]) -> bytes:
@@ -296,7 +301,7 @@ def test_frontend_files_served():
 
 
 @pytest.mark.parametrize("path", [
-    "/.env", "/.env.example", "/backend/main.py", "/Dockerfile", "/docker-compose.yml",
+    "/.env", "/.env.example", "/backend/main.py", "/backend/auth.py", "/backend/database.py", "/Dockerfile", "/docker-compose.yml",
     "/requirements.txt", "/README.md", "/run.ps1", "/.gitignore", "/../backend/main.py",
 ])
 def test_private_files_not_served(path):
