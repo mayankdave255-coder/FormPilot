@@ -24,11 +24,11 @@ FormPilot is an authenticated assistant for filling forms. A user uploads a form
 
 ## Deployment and storage decision
 
-- The app is deployed on Render and uses Render PostgreSQL for structured data.
+- The app is deployed on Render and uses Render PostgreSQL for structured data. The Render dashboard screenshot (2026-11-18) shows the current database on the Free compute plan; Render warns that free databases expire after 30 days and are intended for testing/prototyping.
 - Render's web service filesystem is ephemeral unless a paid persistent disk is attached. R2 was selected as the first persistent file-storage approach and its integration is already in the repository.
 - The user does not want to activate Cloudflare R2 because the setup presents a billing subscription and possible overage charges.
-- Recommended next alternative: store uploaded file bytes in the existing Render PostgreSQL database (for example, a `BYTEA` column) so files survive web-service restarts without a separate object-storage subscription. This is appropriate for a small MVP, but makes the database grow with files and should be revisited if usage grows. Confirm the Render database's available storage/quota before moving production uploads.
-- This PostgreSQL file-storage change is a proposal only; it has not been implemented. Do not ask the user to enable R2 unless they later choose it.
+- Recommended next alternative: after moving the database off its expiring Free plan, store uploaded file bytes in Render PostgreSQL (for example, a `BYTEA` column) so files survive web-service restarts without a separate object-storage subscription. This is appropriate for a small MVP, but makes the database grow with files and should be revisited if usage grows. Confirm the database's available storage/quota and the paid monthly cost before moving production uploads.
+- This PostgreSQL file-storage change is a proposal only; it has not been implemented. The current Free database is not suitable for long-term data because it expires after 30 days. Do not ask the user to enable R2 unless they later choose it.
 - Existing files lost from Render's ephemeral filesystem cannot be recovered; users will need to re-upload them after durable storage is deployed.
 
 ## Next implementation steps
