@@ -1,19 +1,20 @@
 # FormPilot status and remaining work
 
-Status: the authenticated hackathon MVP and account document library are implemented. Before these changes, 40 backend tests and 13 frontend workflow checks passed against the running API; those checks have not been rerun for this update.
+Status: the authenticated hackathon MVP, account document library, and S3-compatible object-storage adapter are implemented. Before these changes, 40 backend tests and 13 frontend workflow checks passed against the running API; those checks have not been rerun for this update.
 
 ## Implemented
 
 - Account creation, sign-in, sign-out and account-owned API access.
 - Persistent local account and application-session storage with upload deletion.
 - Persistent account document gallery with OCR text indexing and cross-application document attachment.
+- S3-compatible private object storage adapter for source uploads and generated drafts; local filesystem adapter remains for development.
 - PDF/image upload, extraction fallbacks, reviewable answers, readiness checks and draft export.
 - Responsive login and application UI; new accounts start without fictional applicant answers.
 - Docker Compose deployment settings and a GitHub Actions backend test workflow.
 
 ## Before a public deployment
 
-1. Set a stable `AUTH_SECRET_KEY` of at least 32 characters, `APP_ENV=production`, and secure cookies. Use HTTPS and persistent storage for `FORMPILOT_DATA_DIR`.
+1. Set a stable `AUTH_SECRET_KEY` of at least 32 characters, `APP_ENV=production`, and secure cookies. Configure private object storage with `OBJECT_STORAGE_BACKEND=s3` and the required S3/R2 environment variables.
 2. Check the configured Gemini API credentials/model. A request returned an HTTP error during the last local exercise; the local fallback allowed manual completion. Gemini is the sole AI provider.
 3. Test the camera, microphone and responsive screens on real Android/iOS devices and supported browsers. Desktop visual inspection was unavailable in this environment.
 4. Use synthetic documents until privacy and retention controls are reviewed.

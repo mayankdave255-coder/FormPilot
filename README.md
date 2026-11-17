@@ -30,7 +30,7 @@ Set `ALLOW_SIGNUP=false` after the intended accounts have been created if public
 
 ## Accounts and storage
 
-Users have email/password accounts. Passwords are stored as salted PBKDF2-SHA256 hashes. The server issues an HTTP-only, SameSite=Lax cookie with a 14-day expiry. Invalid login attempts are temporarily throttled. Accounts, login attempts, application sessions, and the account document library index are stored in the configured SQL database (PostgreSQL in production; SQLite locally). Sessions and library entries are restored from the database after a restart. Uploaded originals remain under `FORMPILOT_DATA_DIR`; deployments need a persistent volume or object storage for that directory. Application copies are removed with the application; documents in the account library persist until deleted there.
+Users have email/password accounts. Passwords are stored as salted PBKDF2-SHA256 hashes. The server issues an HTTP-only, SameSite=Lax cookie with a 14-day expiry. Invalid login attempts are temporarily throttled. Accounts, login attempts, application sessions, and the account document library index are stored in the configured SQL database (PostgreSQL in production; SQLite locally). Sessions and library entries are restored from the database after a restart. In production, set `OBJECT_STORAGE_BACKEND=s3` and configure a private S3-compatible bucket (Cloudflare R2 is supported) for original uploads and generated drafts. PostgreSQL stores document metadata and extracted OCR text. Local development defaults to the `FORMPILOT_DATA_DIR` filesystem adapter.
 
 The document library stores extracted OCR text in the configured SQL database for exact field-label suggestions; those suggestions are unconfirmed and require review. This is still a hackathon MVP, not a production document vault. It does not currently include email verification, password reset, MFA, session/device revocation, a scheduled cleanup worker, encrypted-at-rest storage, a durable background queue, or audited recovery. Signup is open by default. Use synthetic documents for demos. Do not upload real identity, bank, or certificate data to an unreviewed deployment.
 
@@ -39,6 +39,10 @@ The document library stores extracted OCR text in the configured SQL database fo
 The app starts with an empty workspace and does not invent a form or required documents. PDFs with an embedded text layer are extracted locally. Scanned PDFs and images need `GEMINI_API_KEY` configured on the server for OCR; without the key the app reports that no text was extracted. Gemini can also provide model-backed field extraction and explanations. Provider keys remain server-side. Browser speech recognition and speech synthesis are best-effort and depend on browser support; typed answers always remain available.
 
 Copy `.env.example` to `.env` for the available settings. Missing AI keys do not prevent manual completion. A schema or answer extracted from a document is a suggestion and must be reviewed. Readiness results do not verify documents, determine eligibility, or predict approval.
+
+### Render with Cloudflare R2
+
+Keep the Render web service and PostgreSQL database. Create a private R2 bucket and an R2 API token limited to that bucket with Object Read & Write access. Set `OBJECT_STORAGE_BACKEND=s3`, `S3_BUCKET`, `S3_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `S3_REGION=auto`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` in the Render web service environment. Do not enable public bucket access. The API serves files only after account authentication. In production, uploads and draft creation return an error until S3-compatible storage is configured; they never silently write to Render's ephemeral filesystem.
 
 ## Tests
 

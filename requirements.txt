@@ -9,3 +9,4 @@ reportlab>=4,<5
 itsdangerous>=2.2,<3
 SQLAlchemy>=2,<3
 psycopg[binary]>=3.2,<4
+boto3>=1.35,<2
