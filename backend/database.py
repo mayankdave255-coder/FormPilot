@@ -38,6 +38,14 @@ application_sessions = Table(
     Column("updated_at", String(64), nullable=False),
 )
 Index("ix_application_sessions_owner_updated", application_sessions.c.owner_id, application_sessions.c.updated_at)
+document_library = Table(
+    "document_library", metadata,
+    Column("id", String(64), primary_key=True),
+    Column("owner_id", String(32), nullable=False),
+    Column("payload", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+)
+Index("ix_document_library_owner", document_library.c.owner_id)
 
 _engine: Engine | None = None
 
@@ -146,3 +154,40 @@ def list_application_sessions() -> list[dict[str, Any]]:
 def delete_application_session(session_id: str) -> None:
     with transaction() as connection:
         connection.execute(application_sessions.delete().where(application_sessions.c.id == session_id))
+
+
+def save_library_document(document: dict[str, Any]) -> None:
+    values = {"id": document["document_id"], "owner_id": document["owner_id"],
+              "payload": json.dumps(document, ensure_ascii=False), "created_at": document["created_at"]}
+    db_engine = engine()
+    statement = (postgres_insert(document_library) if db_engine.dialect.name == "postgresql"
+                 else sqlite_insert(document_library)).values(**values)
+    statement = statement.on_conflict_do_update(index_elements=[document_library.c.id],
+        set_={key: statement.excluded[key] for key in ("owner_id", "payload", "created_at")})
+    with transaction() as connection:
+        connection.execute(statement)
+
+
+def list_library_documents(owner_id: str) -> list[dict[str, Any]]:
+    with engine().connect() as connection:
+        payloads = connection.execute(select(document_library.c.payload).where(document_library.c.owner_id == owner_id)).scalars().all()
+    results = []
+    for payload in payloads:
+        try:
+            results.append(json.loads(payload))
+        except (TypeError, json.JSONDecodeError):
+            continue
+    return results
+
+
+def get_library_document(document_id: str, owner_id: str) -> dict[str, Any] | None:
+    with engine().connect() as connection:
+        payload = connection.execute(select(document_library.c.payload).where(
+            document_library.c.id == document_id, document_library.c.owner_id == owner_id)).scalar_one_or_none()
+    return json.loads(payload) if payload else None
+
+
+def delete_library_document(document_id: str, owner_id: str) -> None:
+    with transaction() as connection:
+        connection.execute(document_library.delete().where(
+            document_library.c.id == document_id, document_library.c.owner_id == owner_id))

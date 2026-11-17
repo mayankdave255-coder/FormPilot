@@ -112,7 +112,7 @@ def test_health_demo_mode():
     body = client.get("/api/v1/health").json()
     assert body["status"] == "ok" and body["mode"] in {"demo", "live"}
     assert body["capabilities"]["native_pdf_text"] is True
-    assert body["capabilities"]["scanned_document_ocr"] == bool(main.GEMINI_API_KEY or main.SARVAM_API_KEY)
+    assert body["capabilities"]["scanned_document_ocr"] == bool(main.GEMINI_API_KEY)
 
 
 def test_session_lifecycle():
@@ -280,8 +280,6 @@ def test_conversation_never_saves_answer(sid):
 
 
 def test_voice_unavailable_without_keys():
-    if main.SARVAM_API_KEY:
-        pytest.skip("provider key configured")
     t = client.post("/api/v1/voice/transcribe", files={"file": ("a.webm", io.BytesIO(b"abc"), "audio/webm")})
     s = client.post("/api/v1/voice/synthesize", json={"text": "hi"})
     assert t.status_code == 503 and s.status_code == 503

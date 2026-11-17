@@ -12,7 +12,6 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
       FORMPILOT_DATA_DIR: /app/backend/data
       MAX_FILE_MB: ${MAX_FILE_MB:-20}
       MAX_PDF_PAGES: ${MAX_PDF_PAGES:-30}
