@@ -7,3 +7,4 @@ PyMuPDF>=1.24,<2
 Pillow>=10,<13
 reportlab>=4,<5
 sarvamai>=0.1
+itsdangerous>=2.2,<3

@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+backend/data/
+tests/
+.agents/
+.git/
+node_modules/
+*.log
+.python_packages/
+.python_test_runtime/
+.pytest_cache/

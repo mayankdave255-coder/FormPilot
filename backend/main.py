@@ -1,12 +1,14 @@
-"""FormPilot MVP API. Temporary in-memory sessions, with local files removed on deletion/TTL."""
+"""FormPilot API with account-owned sessions and local persistent storage."""
 from __future__ import annotations
 
 import base64
+import asyncio
 import io
 import json
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 import zipfile
@@ -17,7 +19,7 @@ from typing import Any
 import fitz
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,11 +28,15 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+from . import auth
 
 load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("FORMPILOT_DATA_DIR", str(ROOT / "backend" / "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+auth.init_auth(DATA_DIR)
+SESSION_STORE_DIR = DATA_DIR / "sessions"
+SESSION_STORE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "20"))
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "30"))
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "12"))
@@ -39,6 +45,39 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
 SESSIONS: dict[str, dict[str, Any]] = {}
 DOC_INDEX: dict[str, tuple[str, str]] = {}
+_PERSIST_LOCK = threading.Lock()
+
+
+def persist_session(session: dict[str, Any]) -> None:
+    path = SESSION_STORE_DIR / f"{session['id']}.json"
+    temp = path.with_suffix(".tmp")
+    try:
+        with _PERSIST_LOCK:
+            temp.write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+            temp.replace(path)
+    except (OSError, TypeError) as exc:
+        print(f"session_persist_error id={session.get('id','')[:8]} error={type(exc).__name__}")
+
+
+def persist_all_sessions() -> None:
+    for session in list(SESSIONS.values()):
+        persist_session(session)
+
+
+def restore_sessions() -> None:
+    for path in SESSION_STORE_DIR.glob("*.json"):
+        try:
+            session = json.loads(path.read_text(encoding="utf-8"))
+            if not session.get("owner_id") or not session.get("id"):
+                continue
+            SESSIONS[session["id"]] = session
+            for document_id in session.get("documents", {}):
+                DOC_INDEX[document_id] = (session["id"], document_id)
+        except (OSError, json.JSONDecodeError, KeyError) as exc:
+            print(f"session_restore_error file={path.name} error={type(exc).__name__}")
+
+
+restore_sessions()
 
 app = FastAPI(title="FormPilot API", version="1.0.0", description="Application readiness copilot API")
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
@@ -47,6 +86,41 @@ if _cors_origins == ["*"]:
           "This is fine for a local demo but set CORS_ORIGINS in your .env to your real domain "
           "before sharing a public link.")
 app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def authenticate_api_request(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/v1/") or request.method == "OPTIONS":
+        return await call_next(request)
+    public_paths = {
+        "/api/v1/health", "/api/v1/auth/signup", "/api/v1/auth/login",
+        "/api/v1/auth/me", "/api/v1/auth/logout",
+    }
+    user = None
+    if path not in public_paths:
+        user = auth.user_from_token(request.cookies.get("formpilot_auth"))
+        if not user:
+            return JSONResponse(status_code=401, content={"detail":error_shape("auth_required","Sign in to continue.")})
+        request.state.user = user
+        parts = path.strip("/").split("/")
+        resource_session = None
+        if len(parts) >= 4 and parts[2] == "sessions":
+            resource_session = SESSIONS.get(parts[3])
+        elif len(parts) >= 4 and parts[2] == "applications":
+            resource_session = SESSIONS.get(parts[3])
+        elif len(parts) >= 4 and parts[2] == "documents":
+            pair = DOC_INDEX.get(parts[3])
+            resource_session = SESSIONS.get(pair[0]) if pair else None
+        elif len(parts) >= 4 and parts[2] == "fields":
+            application_id = request.query_params.get("application_id")
+            resource_session = SESSIONS.get(application_id) if application_id else None
+        if resource_session and resource_session.get("owner_id") != user["id"]:
+            return JSONResponse(status_code=404, content={"detail":error_shape("resource_not_found","This application was not found.")})
+    response = await call_next(request)
+    if user:
+        persist_all_sessions()
+    return response
 
 SAMPLE_FIELDS = [
     {"id":"full_name","label_original":"Full name as per official record","field_type":"text","required_state":"required_from_form","instruction":"Enter the name shown on your official education record.","page":1,"extraction_status":"needs_review"},
@@ -74,6 +148,17 @@ class SessionCreate(BaseModel):
     title: str = "National Scholarship Application"
     use_case: str = "scholarship"
     preferred_language: str = "hi"
+
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 class SchemaRequest(BaseModel):
@@ -146,6 +231,54 @@ def error_shape(code: str, message: str, recoverable: bool = True, retryable: bo
     return {"code":code,"message":message,"recoverable":recoverable,"retryable":retryable}
 
 
+def set_auth_cookie(response, user: dict[str, str]) -> None:
+    secure = os.getenv("COOKIE_SECURE", "").lower() in {"1", "true", "yes"} or os.getenv("APP_ENV", "development").lower() == "production"
+    response.set_cookie("formpilot_auth", auth.issue_token(user["id"]), max_age=auth.TOKEN_MAX_AGE,
+                        httponly=True, secure=secure, samesite="lax", path="/")
+
+
+@app.post("/api/v1/auth/signup")
+def signup(payload: SignupRequest):
+    if not auth.signup_enabled():
+        raise HTTPException(403, detail=error_shape("signup_disabled","New account creation is currently closed."))
+    try:
+        user = auth.create_user(payload.email, payload.name, payload.password)
+    except ValueError as exc:
+        raise HTTPException(400, detail=error_shape("signup_invalid",str(exc))) from exc
+    response = JSONResponse({"user":user})
+    set_auth_cookie(response,user)
+    return response
+
+
+@app.post("/api/v1/auth/login")
+def login(payload: LoginRequest):
+    try:
+        user = auth.authenticate(payload.email,payload.password)
+    except PermissionError as exc:
+        raise HTTPException(429, detail=error_shape("login_limited",str(exc))) from exc
+    if not user:
+        raise HTTPException(401, detail=error_shape("invalid_credentials","Email or password is incorrect."))
+    response = JSONResponse({"user":user})
+    set_auth_cookie(response,user)
+    return response
+
+
+@app.get("/api/v1/auth/me")
+def auth_me(request: Request):
+    user=auth.user_from_token(request.cookies.get("formpilot_auth"))
+    if not user:
+        raise HTTPException(401,detail=error_shape("auth_required","Sign in to continue."))
+    return {"user":user}
+
+
+@app.post("/api/v1/auth/logout")
+def logout():
+    response=JSONResponse({"logged_out":True})
+    secure = os.getenv("COOKIE_SECURE", "").lower() in {"1", "true", "yes"} or os.getenv("APP_ENV", "development").lower() == "production"
+    response.delete_cookie("formpilot_auth",path="/",httponly=True,secure=secure,samesite="lax")
+    return response
+
+
 def cleanup_expired() -> None:
     cutoff = time.time() - SESSION_TTL_HOURS * 3600
     for session_id, session in list(SESSIONS.items()):
@@ -158,6 +291,7 @@ def cleanup_expired() -> None:
             for document_id in session["documents"]:
                 DOC_INDEX.pop(document_id, None)
             SESSIONS.pop(session_id, None)
+            (SESSION_STORE_DIR/f"{session_id}.json").unlink(missing_ok=True)
 
 
 def doc_path(doc: dict[str, Any]) -> Path:
@@ -345,13 +479,22 @@ def health():
 
 
 @app.post("/api/v1/sessions")
-def create_session(payload: SessionCreate):
+def create_session(payload: SessionCreate, request: Request):
     cleanup_expired()
     session_id=uuid.uuid4().hex
-    session={"id":session_id,"application_id":session_id,"title":payload.title[:120],"use_case":payload.use_case,"preferred_language":payload.preferred_language if payload.preferred_language in {"hi","en"} else "en","status":"active","created_at":utc_now(),"updated_at":utc_now(),"documents":{},"pages":{},"fields":[],"sections":[],"answers":{},"evidence":[],"issues":[],"conversation":[],"drafts":[],"flags":{},"demo_rules":{"income_certificate_required":True,"marksheet_required":True,"bank_proof_required":True}}
+    session={"id":session_id,"application_id":session_id,"owner_id":request.state.user["id"],"title":payload.title[:120],"use_case":payload.use_case,"preferred_language":payload.preferred_language if payload.preferred_language in {"hi","en"} else "en","status":"active","created_at":utc_now(),"updated_at":utc_now(),"documents":{},"pages":{},"fields":[],"sections":[],"answers":{},"evidence":[],"issues":[],"conversation":[],"drafts":[],"flags":{},"demo_rules":{"income_certificate_required":True,"marksheet_required":True,"bank_proof_required":True}}
     SESSIONS[session_id]=session
     (DATA_DIR/session_id).mkdir(parents=True,exist_ok=True)
+    persist_session(session)
     return {"session_id":session_id,"application_id":session_id,"status":"active","created_at":session["created_at"]}
+
+
+@app.get("/api/v1/sessions")
+def list_sessions(request: Request):
+    cleanup_expired()
+    owner_id=request.state.user["id"]
+    items=[{"session_id":s["id"],"application_id":s["application_id"],"title":s["title"],"status":s["status"],"updated_at":s["updated_at"]} for s in SESSIONS.values() if s.get("owner_id")==owner_id]
+    return {"sessions":sorted(items,key=lambda x:x["updated_at"],reverse=True)}
 
 
 @app.get("/api/v1/sessions/{session_id}")
@@ -367,6 +510,7 @@ def delete_session(session_id: str):
     for doc_id in s["documents"]: DOC_INDEX.pop(doc_id,None)
     shutil.rmtree(DATA_DIR/session_id,ignore_errors=True)
     SESSIONS.pop(session_id,None)
+    (SESSION_STORE_DIR/f"{session_id}.json").unlink(missing_ok=True)
     return {"deleted":True,"session_id":session_id}
 
 
@@ -397,6 +541,7 @@ async def upload_document(application_id: str, file: UploadFile=File(...), docum
     (folder/storage_name).write_bytes(content)
     doc={"document_id":document_id,"application_id":application_id,"session_id":session["id"],"filename":Path(file.filename or "document").name[:160],"mime_type":mime,"size":len(content),"page_count":1,"kind":document_kind[:40],"processing_status":"uploaded","storage_name":storage_name,"created_at":utc_now(),"language":language,"error":None}
     session["documents"][document_id]=doc;session["updated_at"]=utc_now();DOC_INDEX[document_id]=(session["id"],document_id)
+    persist_session(session)
     return {k:v for k,v in doc.items() if k not in {"storage_name","session_id"}}
 
 
@@ -406,6 +551,7 @@ def process_document(document_id: str, background: BackgroundTasks, payload: dic
     if doc["processing_status"] in {"processing","completed"}:
         return {"job_id":doc.get("job_id"),"document_id":document_id,"status":doc["processing_status"]}
     doc["processing_status"]="processing";doc["job_id"]=uuid.uuid4().hex;doc["progress"]=5;doc["language"]=(payload or {}).get("language",session["preferred_language"])
+    persist_session(session)
     background.add_task(process_document_job,session["id"],document_id)
     return {"job_id":doc["job_id"],"document_id":document_id,"status":"processing"}
 
@@ -425,8 +571,10 @@ def process_document_job(session_id: str, document_id: str):
             doc["extracted_text"]=text[:30000]
         elif doc["kind"]!="application" and text:
             match_supporting_evidence(session,doc,text)
+        persist_session(session)
     except Exception as exc:
         doc["processing_status"]="failed";doc["error"]=error_shape("processing_failed","The document could not be processed. You can retry, choose another file or enter answers manually.",True,True);doc["progress"]=0
+        persist_session(session)
         print(f"document_error id={document_id[:8]} error={type(exc).__name__}")
 
 
@@ -480,7 +628,7 @@ def form_schema(application_id: str,payload:SchemaRequest):
     text="\n\n".join(d.get("extracted_text","") for d in docs)
     fields,sections=infer_schema(text)
     session["fields"]=fields;session["sections"]=sections;session["schema_version"]=int(session.get("schema_version",0))+1
-    return {"status":"ready","schema_version":session["schema_version"],"fields":fields,"sections":[{"name":s} if isinstance(s,str) else s for s in sections],"field_count":len(fields),"required_count":sum(f["required_state"]=="required_from_form" for f in fields),"review_count":sum(f["extraction_status"]=="needs_review" for f in fields)}
+    return {"status":"ready","schema_version":session["schema_version"],"fields":fields,"sections":[{"name":s} if isinstance(s,str) else s for s in sections],"source":"demo" if fields==SAMPLE_FIELDS else ("gemini" if GEMINI_API_KEY else "text extraction"),"field_count":len(fields),"required_count":sum(f["required_state"]=="required_from_form" for f in fields),"review_count":sum(f["extraction_status"]=="needs_review" for f in fields)}
 
 
 @app.patch("/api/v1/fields/{field_id}")
@@ -601,7 +749,7 @@ def resolve_issue(application_id:str,issue_id:str,body:dict[str,Any]|None=None):
 
 def draw_draft(session:dict[str,Any],out:Path,include_warnings:bool=True):
     font_regular="Helvetica";font_bold="Helvetica-Bold"
-    regular_paths=[os.getenv("PDF_UNICODE_FONT"),"C:/Windows/Fonts/Nirmala.ttf","/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf","/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf","/usr/share/fonts/truetype/freefont/FreeSans.ttf","/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc"]
+    regular_paths=[os.getenv("PDF_UNICODE_FONT"),"C:/Windows/Fonts/Nirmala.ttf","C:/Windows/Fonts/Nirmala.ttc","/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf","/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf","/usr/share/fonts/truetype/freefont/FreeSans.ttf","/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc"]
     bold_paths=[os.getenv("PDF_UNICODE_FONT_BOLD"),"C:/Windows/Fonts/NirmalaB.ttf","/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf"]
     candidate=next((p for p in regular_paths if p and Path(p).is_file()),None)
     bold_candidate=next((p for p in bold_paths if p and Path(p).is_file()),None)

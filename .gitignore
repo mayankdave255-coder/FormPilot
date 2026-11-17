@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+backend/data/
+.next/
+node_modules/
+dist/
+*.log
+.python_packages/
+.pytest_cache/
+.python_test_runtime/

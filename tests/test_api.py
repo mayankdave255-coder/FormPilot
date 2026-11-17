@@ -2,11 +2,51 @@
 import io
 import fitz
 import pytest
+import uuid
 from fastapi.testclient import TestClient
 
 from backend import main
 
 client = TestClient(main.app)
+
+
+@pytest.fixture(autouse=True)
+def signed_in_user():
+    email = f"{uuid.uuid4().hex}@example.test"
+    response = client.post("/api/v1/auth/signup", json={"name":"Test User", "email":email, "password":"Correct-Horse-42!"})
+    assert response.status_code == 200, response.text
+    yield {"email": email, "password": "Correct-Horse-42!"}
+    client.post("/api/v1/auth/logout")
+
+
+def test_auth_required_and_session_isolation():
+    anonymous = TestClient(main.app)
+    assert anonymous.get("/api/v1/sessions").status_code == 401
+    created = client.post("/api/v1/sessions", json={}).json()
+    other = TestClient(main.app)
+    other.post("/api/v1/auth/signup", json={"name":"Other User", "email":f"{uuid.uuid4().hex}@example.test", "password":"Correct-Horse-42!"})
+    assert other.get(f"/api/v1/sessions/{created['session_id']}").status_code == 404
+    assert other.delete(f"/api/v1/sessions/{created['session_id']}").status_code == 404
+    assert client.delete(f"/api/v1/sessions/{created['session_id']}").status_code == 200
+
+
+def test_signup_validation_and_login(signed_in_user):
+    assert client.post("/api/v1/auth/login", json={"email":"unknown@example.test", "password":"wrong"}).status_code == 401
+    assert client.get("/api/v1/auth/me").status_code == 200
+    client.post("/api/v1/auth/logout")
+    assert client.get("/api/v1/auth/me").status_code == 401
+    result = client.post("/api/v1/auth/login", json=signed_in_user)
+    assert result.status_code == 200
+    assert client.get("/api/v1/auth/me").json()["user"]["email"] == signed_in_user["email"]
+
+
+def test_session_data_is_persisted(sid):
+    path = main.SESSION_STORE_DIR / f"{sid}.json"
+    assert path.exists()
+    saved = path.read_text(encoding="utf-8")
+    assert '"owner_id"' in saved
+    client.delete(f"/api/v1/sessions/{sid}")
+    assert not path.exists()
 
 
 def make_pdf(lines: list[str]) -> bytes:

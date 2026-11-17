@@ -1,20 +1,17 @@
 # FormPilot
 
-FormPilot is a responsive application-readiness assistant for applicants completing complex forms. This hackathon MVP connects a browser UI to a FastAPI service. It accepts application and support documents, extracts document text, keeps answer provenance, runs deterministic checks, and creates a draft answer-sheet PDF.
-
-The demo works without provider credentials. Voice input and playback are free by default: they use the browser's built-in Web Speech API (`SpeechRecognition` / `speechSynthesis`), so no voice provider key is needed. Add `GEMINI_API_KEY` to enable model-backed form-schema extraction, explanations, and OCR for scanned documents (Gemini has a free tier, suitable for demo-level usage). `SARVAM_API_KEY` is optional and only adds a paid, higher-quality OCR path for scanned documents through Sarvam's Parse API — everything else in the app works without it. Provider calls run on the server. The browser never receives provider keys.
+FormPilot is a responsive application-readiness assistant for applicants completing complex forms. It accepts application and supporting documents, extracts text, lets applicants review and save answers, runs readiness checks, and creates a draft answer-sheet PDF. It never submits an application to an official portal.
 
 ## Run locally on Windows
 
 1. Install Python 3.11 or newer.
-2. Open PowerShell in this folder and run `.\run.ps1`.
-3. Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+2. Copy `.env.example` to `.env` and set a stable `AUTH_SECRET_KEY` (at least 32 characters).
+3. Open PowerShell in this folder and run `.\run.ps1`.
+4. Open [http://127.0.0.1:8000](http://127.0.0.1:8000), create an account, then start an application.
 
-The first run creates `.venv` and installs the packages in `requirements.txt`. To stop the server, press Ctrl+C.
+The first run creates `.venv` and installs `requirements.txt`. The API and frontend are served together. Uploaded documents and user/session metadata are stored under `FORMPILOT_DATA_DIR` (defaults to `backend/data`). Do not delete that folder while the app is running.
 
-To run the same app in Docker, use `docker compose up --build` from this folder. The API and frontend are served together on port 8000. Uploaded files are stored in the mounted `backend/data` folder.
-
-You can also install manually:
+To run manually:
 
 ```powershell
 python -m venv .venv
@@ -23,45 +20,47 @@ python -m pip install -r requirements.txt
 python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-## Provider setup
+## Deploy with Docker Compose
 
-Copy `.env.example` to `.env`, then add the keys you have:
+Set a stable random `AUTH_SECRET_KEY` in your deployment environment and run `docker compose up --build -d`. Compose requires the secret and defaults to production cookie settings. Put the service behind HTTPS and route the public domain to the app on port 8000. Keep `/app/backend/data` on persistent storage. The browser and API must be same-origin (or behind a same-origin reverse proxy) for the session cookie to work.
 
-- `GEMINI_API_KEY` enables model-backed form schema extraction, explanations, and OCR for scanned documents. `GEMINI_MODEL` selects the model. Google's Gemini API has a free tier, which is the recommended path if you don't want to pay for anything.
-- `SARVAM_API_KEY` is **optional** and not required for voice at all — recorded voice answers are transcribed, and responses spoken, entirely in the browser via the Web Speech API, for free, with no key. Setting `SARVAM_API_KEY` only adds a secondary, paid OCR path for scanned documents (Sarvam's Parse API); without it, scanned-document OCR falls back to Gemini (if `GEMINI_API_KEY` is set) or local text extraction.
+Set `ALLOW_SIGNUP=false` after the intended accounts have been created if public account creation should close. Do not rotate `AUTH_SECRET_KEY` casually: doing so signs out all users. For deployment, set `CORS_ORIGINS` to the actual public origin if other origins are needed; avoid wildcard origins with authenticated workflows.
 
-Leave missing keys blank. FormPilot then uses the local scholarship demo schema, bilingual explanations, typed answers and deterministic validation. The UI labels provider failures and keeps manual entry available. Voice input requires a browser with `SpeechRecognition` support (Chrome and most Chromium-based browsers); on unsupported browsers the mic button shows a message and you can type the answer instead.
+## Accounts and storage
 
-The first FormPilot sample is fictional. It demonstrates Rahul Kumar's scholarship application, a name comparison against a marksheet, and a missing income certificate. Do not upload real government IDs, account numbers or certificates to a hackathon demo.
+Users have email/password accounts. Passwords are stored as salted PBKDF2-SHA256 hashes. The server issues an HTTP-only, SameSite=Lax cookie with a 14-day expiry. Invalid login attempts are temporarily throttled. Application sessions belong to one account, are persisted as JSON, and are restored after a server restart. Uploaded files and account/session records are kept in the configured data folder; inactive application sessions are removed after `SESSION_TTL_HOURS` when cleanup runs. Deleting an application removes its uploaded files and session record.
 
-## Data and retention
+This is a hackathon MVP, not a production document vault. It does not currently include email verification, password reset, MFA, session/device revocation, a scheduled cleanup worker, encrypted-at-rest storage, a durable background queue, or audited recovery. Signup is open by default. Use synthetic documents for demos. Do not upload real identity, bank, or certificate data to an unreviewed deployment.
 
-The MVP keeps sessions in server memory and uploaded files in `backend/data/<session-id>`. A session is removed after 12 hours of inactivity when the next session is created, or immediately when the deletion API is called. Restarting the server clears session records; remove `backend/data` to clear leftover files. This is temporary demo storage, not a document vault.
+## Providers and behavior
 
-Files are limited to 20 MB and PDFs to 30 pages by default. Set `MAX_FILE_MB`, `MAX_PDF_PAGES`, `SESSION_TTL_HOURS`, `FORMPILOT_DATA_DIR`, and optionally `PDF_UNICODE_FONT` in `.env` to change those local limits. Production use needs persistent session storage, background-job infrastructure, access control, encryption, a scheduled cleanup worker and an appropriate privacy review.
+The demo works without provider credentials. It uses native PDF text extraction, deterministic validation, and a local sample scholarship schema when there is no usable form text. Add `GEMINI_API_KEY` to enable model-backed schema extraction, explanations, and OCR for scanned documents. `SARVAM_API_KEY` is optional and adds another OCR path. Provider keys remain server-side. Browser speech recognition and speech synthesis are best-effort and depend on browser support; typed answers always remain available.
 
-## API
-
-Interactive API documentation is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). Routes are versioned under `/api/v1`.
-
-The MVP includes session management, file upload and deletion, background PDF/OCR processing, page extraction, form schema and field correction, localized explanations, answer save/confirmation, evidence matching, voice transcription and speech synthesis adapters, rule-based readiness checks, issue resolution, answer export and draft PDF generation.
-
-Readiness checks report missing values, configured format issues and candidate cross-document mismatches. They do not verify documents against official sources, predict approval, or submit an application. Extracted values remain suggestions until the applicant confirms them.
+Copy `.env.example` to `.env` for the available settings. Missing AI keys do not prevent manual completion. A schema or answer extracted from a document is a suggestion and must be reviewed. Readiness results do not verify documents, determine eligibility, or predict approval.
 
 ## Tests
 
+Backend API and security tests:
+
 ```powershell
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The browser tests start from a running server (`python -m uvicorn backend.main:app --port 8000`), then run `npm install` and `npm test` inside `tests/frontend`.
+Browser workflow smoke tests run against a live server:
 
-## Project files
+```powershell
+python -m uvicorn backend.main:app --port 8000
+# In another terminal:
+cd tests/frontend
+npm ci
+npm test
+```
 
-- `index.html`, `styles.css`, `app.js`: responsive five-screen frontend.
-- `backend/main.py`: FastAPI routes, temporary session store, extraction/provider adapters, validation and PDF export.
-- `requirements.txt`: Python dependencies.
-- `tests/`: API tests (pytest) and a jsdom end-to-end test of the frontend.
-- `TASKS.md`: open work before the demo.
-- `.env.example`: local configuration template.
+## Main components
+
+- `index.html`, `styles.css`, `app.js`: responsive sign-in and five-screen application interface.
+- `backend/main.py`: FastAPI routes, uploads, extraction/provider adapters, readiness checks and PDF/JSON export.
+- `backend/auth.py`: account storage, password hashing and signed cookie tokens.
+- `backend/data/`: local database, persisted sessions and uploads (ignored by Git).
+- `tests/`: API tests and a jsdom browser-to-API workflow smoke test.
