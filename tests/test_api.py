@@ -70,6 +70,8 @@ APPLICATION_PDF = make_pdf([
     "National Scholarship Application",
     "Full name as per official record: ",
     "Date of birth: ",
+    "Gender: ",
+    "Residential address: ",
     "Annual household income: ",
     "Bank account holder name: ",
     "Email address: ",
@@ -228,19 +230,21 @@ def test_supporting_documents_do_not_use_assumed_scholarship_rules(sid):
 
 
 def test_invalid_email(sid):
-    client.post(f"/api/v1/applications/{sid}/form-schema", json={"document_ids": []})
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     answer(sid, "email", "not-an-email")
     ids = {i["id"] for i in client.post(f"/api/v1/applications/{sid}/validate", json={}).json()["issues"]}
     assert "invalid_email" in ids
 
 
 def test_unconfirmed_answer_needs_review(sid):
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     answer(sid, "gender", "Male", confirmed=False)
     ids = {i["id"] for i in client.post(f"/api/v1/applications/{sid}/validate", json={}).json()["issues"]}
     assert "confirm_gender" in ids
 
 
 def test_name_mismatch_detected_and_resolvable(sid):
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     upload_and_process(sid, "marksheet.pdf", MARKSHEET_PDF)
     ev = client.post(f"/api/v1/applications/{sid}/evidence-match").json()
     assert any(c["field_id"] == "full_name" and c["value"] == "Rahul Kumar" for c in ev["candidates"])
@@ -253,6 +257,7 @@ def test_name_mismatch_detected_and_resolvable(sid):
 
 
 def test_matching_name_has_no_mismatch(sid):
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     upload_and_process(sid, "marksheet.pdf", MARKSHEET_PDF)
     answer(sid, "full_name", "  rahul   KUMAR ")
     ids = {i["id"] for i in client.get(f"/api/v1/applications/{sid}/readiness").json()["issues"]}
@@ -285,7 +290,7 @@ def test_voice_unavailable_without_keys():
 # ---- export and draft ----------------------------------------------------
 
 def test_export_and_draft_pdf(sid):
-    client.post(f"/api/v1/applications/{sid}/form-schema", json={"document_ids": []})
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     answer(sid, "full_name", "Rahul Kumar")
     export = client.get(f"/api/v1/applications/{sid}/answers/export").json()
     assert export["submitted"] is False
@@ -298,7 +303,7 @@ def test_export_and_draft_pdf(sid):
 
 
 def test_draft_renders_hindi_answer(sid):
-    client.post(f"/api/v1/applications/{sid}/form-schema", json={"document_ids": []})
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     answer(sid, "residential_address", "भोपाल, मध्य प्रदेश")
     draft = client.post(f"/api/v1/applications/{sid}/draft", json={}).json()
     pdf = client.get(draft["download_url"]).content

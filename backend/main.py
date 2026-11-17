@@ -452,7 +452,19 @@ def infer_schema(text: str) -> tuple[list[dict[str, Any]], list[str]]:
             if 4 <= len(candidate) <= 90 and (":" in line or "?" in line or re.search(r"\b(name|date|address|income|qualification|bank|school|category|gender|email)\b",candidate,re.I)):
                 label=candidate.split(":",1)[0].strip()
                 if label and not any(x["label_original"].lower()==label.lower() for x in labels):
-                    labels.append({"id":re.sub(r"[^a-z0-9]+","_",label.lower()).strip("_")[:60],"label_original":label,"field_type":"text","required_state":"unknown","instruction":"","page":1,"extraction_status":"needs_review"})
+                    label_key=label.casefold()
+                    canonical_ids=[
+                        (r"\b(full name|applicant name|student name)\b","full_name"),
+                        (r"\b(date of birth|birth date|dob)\b","date_of_birth"),
+                        (r"\b(annual|household|family) income\b","annual_household_income"),
+                        (r"\b(bank account holder|account holder)\b","bank_account_holder"),
+                        (r"\b(email|e-mail)\b","email"),
+                        (r"\b(residential|postal|home) address\b|^address$","residential_address"),
+                        (r"\bgender\b","gender"),
+                    ]
+                    field_id=next((canonical for pattern,canonical in canonical_ids if re.search(pattern,label_key)),re.sub(r"[^a-z0-9]+","_",label.lower()).strip("_")[:60])
+                    field_type="email" if field_id=="email" else "date" if field_id=="date_of_birth" else "currency" if field_id=="annual_household_income" else "selection" if field_id=="gender" else "address" if field_id=="residential_address" else "text"
+                    labels.append({"id":field_id,"label_original":label,"field_type":field_type,"required_state":"unknown","instruction":"","page":1,"extraction_status":"needs_review"})
         if labels: return labels[:60],["Detected fields"]
     return [],[]
 
