@@ -27,3 +27,28 @@ jobs:
 
       - name: Run backend tests
         run: python -m pytest -q tests/test_api.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend test dependencies
+        run: npm ci --prefix tests/frontend
+
+      - name: Start FormPilot for browser workflow tests
+        env:
+          APP_ENV: development
+          AUTH_SECRET_KEY: local-ci-test-signing-key-not-for-deployment
+          FORMPILOT_DATA_DIR: /tmp/formpilot-ci-data
+          DATABASE_URL: sqlite:////tmp/formpilot-ci-data/formpilot.sqlite3
+        run: |
+          python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 > /tmp/formpilot-uvicorn.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/api/v1/health > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/formpilot-uvicorn.log
+          exit 1
+
+      - name: Run browser workflow tests
+        run: npm test --prefix tests/frontend

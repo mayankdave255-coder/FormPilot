@@ -64,10 +64,11 @@ const check = async (name, fn) => { try { await fn(); passed++; console.log('  o
     assert.ok(state().apiReady, 'apiReady should be true');
     assert.ok(w.localStorage.getItem('formpilot.session'));
   });
-  await check('all five screens render without errors', async () => {
-    for (const [id, text] of [['analysis', 'Document analysis'], ['assistant', "Let's complete this together"], ['review', 'readiness report'], ['draft', 'application draft'], ['dashboard', 'Welcome']]) {
-      await go(id); assert.ok($('#screenContent').textContent.includes(text), `${id} missing "${text}"`);
-    }
+  await check('fresh workspace has no invented application', async () => {
+    assert.ok($('#screenContent').textContent.includes('No applications yet'));
+    assert.ok(!$('#screenContent').textContent.includes('National Scholarship'));
+    await go('analysis');
+    assert.ok($('#screenContent').textContent.includes('Start with your form'));
     assert.deepStrictEqual(errors, []);
   });
   await check('API errors show a readable message, not [object Object]', async () => {
@@ -85,6 +86,12 @@ const check = async (name, fn) => { try { await fn(); passed++; console.log('  o
     assert.strictEqual(Number(stat[0]), state().formFields.length);
     assert.ok(Number(stat[0]) >= 3, 'analysis should render the server schema or documented local demo schema');
   });
+  await check('all five screens render after a form is uploaded', async () => {
+    for (const [id, text] of [['analysis', 'Document analysis'], ['assistant', "Let's complete this together"], ['review', 'readiness report'], ['draft', 'application draft'], ['dashboard', 'Welcome']]) {
+      await go(id); assert.ok($('#screenContent').textContent.includes(text), `${id} missing "${text}"`);
+    }
+    assert.deepStrictEqual(errors, []);
+  });
   await check('confirming an answer in the assistant saves it on the server', async () => {
     // The guided assistant now walks the actual detected form fields (state.formFields)
     // rather than a fixed 3-question demo script, so the "current" field's API id is
@@ -100,7 +107,7 @@ const check = async (name, fn) => { try { await fn(); passed++; console.log('  o
   await check('"Run checks again" shows server issues on the review screen', async () => {
     await go('review'); $('[data-action="run-validation"]').click(); await sleep(600);
     assert.ok($('#serverChecks'), 'server checks card missing');
-    assert.ok($('#serverChecks').textContent.includes('income certificate'));
+    assert.ok($('#serverChecks').textContent.includes('latest readiness run'));
   });
   await check('draft PDF downloads from the server', async () => {
     await go('draft'); let blob = null;

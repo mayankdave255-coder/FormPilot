@@ -36,7 +36,7 @@ This is a hackathon MVP, not a production document vault. It does not currently 
 
 ## Providers and behavior
 
-The demo works without provider credentials. It uses native PDF text extraction, deterministic validation, and a local sample scholarship schema when there is no usable form text. Add `GEMINI_API_KEY` to enable model-backed schema extraction, explanations, and OCR for scanned documents. `SARVAM_API_KEY` is optional and adds another OCR path. Provider keys remain server-side. Browser speech recognition and speech synthesis are best-effort and depend on browser support; typed answers always remain available.
+The app starts with an empty workspace and does not invent a form or required documents. PDFs with an embedded text layer are extracted locally. Scanned PDFs and images need `GEMINI_API_KEY` or `SARVAM_API_KEY` configured on the server for OCR; without either key the app reports that no text was extracted. Gemini can also provide model-backed field extraction and explanations. Provider keys remain server-side. Browser speech recognition and speech synthesis are best-effort and depend on browser support; typed answers always remain available.
 
 Copy `.env.example` to `.env` for the available settings. Missing AI keys do not prevent manual completion. A schema or answer extracted from a document is a suggestion and must be reviewed. Readiness results do not verify documents, determine eligibility, or predict approval.
 

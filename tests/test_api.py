@@ -109,6 +109,8 @@ def upload_and_process(sid, name, content, kind="supporting", mime="application/
 def test_health_demo_mode():
     body = client.get("/api/v1/health").json()
     assert body["status"] == "ok" and body["mode"] in {"demo", "live"}
+    assert body["capabilities"]["native_pdf_text"] is True
+    assert body["capabilities"]["scanned_document_ocr"] == bool(main.GEMINI_API_KEY or main.SARVAM_API_KEY)
 
 
 def test_session_lifecycle():
@@ -167,9 +169,26 @@ def test_schema_from_uploaded_application(sid):
     assert any("income" in l for l in labels) and any("email" in l for l in labels)
 
 
-def test_schema_falls_back_to_sample_without_document(sid):
+def test_empty_application_has_no_invented_schema(sid):
     schema = client.post(f"/api/v1/applications/{sid}/form-schema", json={"document_ids": []}).json()
-    assert schema["field_count"] == len(main.SAMPLE_FIELDS)
+    assert schema["field_count"] == 0
+    assert schema["fields"] == []
+    assert schema["source"] == "none"
+
+
+def test_restore_clears_legacy_empty_scholarship_demo(sid):
+    session = main.SESSIONS[sid]
+    session["title"] = "National Scholarship Application"
+    session["fields"] = [dict(field) for field in main.SAMPLE_FIELDS]
+    session["sections"] = ["Applicant information"]
+    session["demo_rules"] = {"income_certificate_required": True}
+    database.save_application_session(session)
+    main.SESSIONS.pop(sid)
+    main.restore_sessions()
+    restored = main.SESSIONS[sid]
+    assert restored["title"] == "New application"
+    assert restored["fields"] == [] and restored["sections"] == []
+    assert "demo_rules" not in restored
 
 
 def test_image_without_provider_completes_with_no_text(sid):
@@ -196,18 +215,16 @@ def test_unknown_field_rejected(sid):
     assert answer(sid, "does_not_exist", "x").status_code == 404
 
 
-def test_validation_reports_required_fields_even_before_schema(sid):
+def test_validation_has_no_invented_requirements_before_form_upload(sid):
     issues = client.post(f"/api/v1/applications/{sid}/validate", json={}).json()["issues"]
-    ids = {i["id"] for i in issues}
-    assert "missing_full_name" in ids, "sample required fields should be checked in demo mode"
+    assert issues == []
 
 
-def test_missing_income_certificate_then_added(sid):
-    ids = {i["id"] for i in client.post(f"/api/v1/applications/{sid}/validate", json={}).json()["issues"]}
-    assert "missing_income_certificate" in ids
+def test_supporting_documents_do_not_use_assumed_scholarship_rules(sid):
     upload_and_process(sid, "income.pdf", INCOME_PDF, kind="income_certificate")
     ids = {i["id"] for i in client.post(f"/api/v1/applications/{sid}/validate", json={}).json()["issues"]}
     assert "missing_income_certificate" not in ids
+    assert "missing_marksheet" not in ids
 
 
 def test_invalid_email(sid):
@@ -245,14 +262,14 @@ def test_matching_name_has_no_mismatch(sid):
 # ---- explain / conversation / voice --------------------------------------
 
 def test_explain_field_demo_languages(sid):
-    client.post(f"/api/v1/applications/{sid}/form-schema", json={"document_ids": []})
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     en = client.post(f"/api/v1/fields/annual_household_income/explain?application_id={sid}", json={"language": "en"}).json()
     hi = client.post(f"/api/v1/fields/annual_household_income/explain?application_id={sid}", json={"language": "hi"}).json()
     assert en["provider"] == "demo" and hi["explanation"] != en["explanation"]
 
 
 def test_conversation_never_saves_answer(sid):
-    client.post(f"/api/v1/applications/{sid}/form-schema", json={"document_ids": []})
+    upload_and_process(sid, "form.pdf", APPLICATION_PDF, kind="application")
     r = client.post(f"/api/v1/applications/{sid}/conversation", json={"field_id": "annual_household_income", "text": "3 lakh", "language": "en"}).json()
     assert r["answer_saved"] is False and "3 lakh" in r["assistant_turn"]["text"]
 

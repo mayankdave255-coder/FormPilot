@@ -77,12 +77,22 @@ def restore_sessions() -> None:
     for session in restored:
         if not session.get("owner_id") or not session.get("id"):
             continue
+        if not session.get("documents"):
+            changed = False
+            if session.get("fields") == SAMPLE_FIELDS:
+                session["fields"], session["sections"] = [], []
+                changed = True
+            if session.get("title") == "National Scholarship Application":
+                session["title"] = "New application"
+                changed = True
+            if session.pop("demo_rules", None) is not None:
+                changed = True
+            if changed:
+                database.save_application_session(session)
         SESSIONS[session["id"]] = session
         for document_id in session.get("documents", {}):
             DOC_INDEX[document_id] = (session["id"], document_id)
 
-
-restore_sessions()
 
 app = FastAPI(title="FormPilot API", version="1.0.0", description="Application readiness copilot API")
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
@@ -148,10 +158,12 @@ SAMPLE_FIELDS = [
     {"id":"declaration_consent","label_original":"Applicant Declaration","field_type":"checkbox","required_state":"unknown","instruction":"Read the declaration before selecting a response.","page":4,"extraction_status":"needs_review"},
 ]
 
+restore_sessions()
+
 
 class SessionCreate(BaseModel):
-    title: str = "National Scholarship Application"
-    use_case: str = "scholarship"
+    title: str = "New application"
+    use_case: str = "general"
     preferred_language: str = "hi"
 
 
@@ -442,7 +454,7 @@ def infer_schema(text: str) -> tuple[list[dict[str, Any]], list[str]]:
                 if label and not any(x["label_original"].lower()==label.lower() for x in labels):
                     labels.append({"id":re.sub(r"[^a-z0-9]+","_",label.lower()).strip("_")[:60],"label_original":label,"field_type":"text","required_state":"unknown","instruction":"","page":1,"extraction_status":"needs_review"})
         if labels: return labels[:60],["Detected fields"]
-    return [dict(x) for x in SAMPLE_FIELDS],["Applicant information","Family and income","Education and bank"]
+    return [],[]
 
 
 def normalized(value: str) -> str:
@@ -451,7 +463,7 @@ def normalized(value: str) -> str:
 
 def validation_for(session: dict[str, Any]) -> list[dict[str, Any]]:
     issues=[]
-    for field in (session["fields"] or SAMPLE_FIELDS):
+    for field in session["fields"]:
         answer=session["answers"].get(field["id"])
         required=field.get("required_state")=="required_from_form"
         if required and (not answer or not answer.get("value")):
@@ -465,30 +477,19 @@ def validation_for(session: dict[str, Any]) -> list[dict[str, Any]]:
         evidence=[e for e in session["evidence"] if e.get("field_id")=="full_name"]
         if evidence and normalized(name_answer["value"]) != normalized(evidence[0]["value"]):
             issues.append({"id":"name_mismatch","field_id":name_answer["field_id"],"rule_id":"cross_document_name","severity":"needs_review","message":"The application name differs from the name extracted from a supporting document. Review both values.","evidence_refs":[evidence[0]["document_id"]],"action":"review_evidence","status":"open"})
-    docs=[d for d in session["documents"].values() if d.get("kind")=="income_certificate"]
-    has_income=bool(docs)
-    if not has_income and session.get("demo_rules",{}).get("income_certificate_required",True):
-        issues.append({"id":"missing_income_certificate","rule_id":"document_presence","severity":"missing","message":"The sample form instructions list an income certificate, but one has not been added.","action":"add_document","status":"open","source":"National Scholarship Application · Supporting documents"})
-    for kind,rule_key,issue_id,label in [
-        ("marksheet","marksheet_required","missing_marksheet","student marksheet"),
-        ("bank_proof","bank_proof_required","missing_bank_proof","bank proof"),
-    ]:
-        present=any(d.get("kind")==kind for d in session["documents"].values())
-        if not present and session.get("demo_rules",{}).get(rule_key,True):
-            issues.append({"id":issue_id,"rule_id":"document_presence","severity":"missing","message":f"The sample form instructions list a {label}, but one has not been added.","action":"add_document","status":"open","source":"National Scholarship Application · Supporting documents"})
     return issues
 
 
 @app.get("/api/v1/health")
 def health():
-    return {"status":"ok","app":"FormPilot","version":"1.0.0","database":{"status":"connected" if database.ping() else "unavailable","backend":database.backend_name()},"providers":{"gemini":bool(GEMINI_API_KEY),"sarvam":bool(SARVAM_API_KEY)},"mode":"live" if GEMINI_API_KEY or SARVAM_API_KEY else "demo","retention_hours":SESSION_TTL_HOURS}
+    return {"status":"ok","app":"FormPilot","version":"1.0.0","database":{"status":"connected" if database.ping() else "unavailable","backend":database.backend_name()},"providers":{"gemini":bool(GEMINI_API_KEY),"sarvam":bool(SARVAM_API_KEY)},"capabilities":{"native_pdf_text":True,"scanned_document_ocr":bool(GEMINI_API_KEY or SARVAM_API_KEY)},"mode":"live" if GEMINI_API_KEY or SARVAM_API_KEY else "demo","retention_hours":SESSION_TTL_HOURS}
 
 
 @app.post("/api/v1/sessions")
 def create_session(payload: SessionCreate, request: Request):
     cleanup_expired()
     session_id=uuid.uuid4().hex
-    session={"id":session_id,"application_id":session_id,"owner_id":request.state.user["id"],"title":payload.title[:120],"use_case":payload.use_case,"preferred_language":payload.preferred_language if payload.preferred_language in {"hi","en"} else "en","status":"active","created_at":utc_now(),"updated_at":utc_now(),"documents":{},"pages":{},"fields":[],"sections":[],"answers":{},"evidence":[],"issues":[],"conversation":[],"drafts":[],"flags":{},"demo_rules":{"income_certificate_required":True,"marksheet_required":True,"bank_proof_required":True}}
+    session={"id":session_id,"application_id":session_id,"owner_id":request.state.user["id"],"title":payload.title[:120],"use_case":payload.use_case,"preferred_language":payload.preferred_language if payload.preferred_language in {"hi","en"} else "en","status":"active","created_at":utc_now(),"updated_at":utc_now(),"documents":{},"pages":{},"fields":[],"sections":[],"answers":{},"evidence":[],"issues":[],"conversation":[],"drafts":[],"flags":{}}
     SESSIONS[session_id]=session
     (DATA_DIR/session_id).mkdir(parents=True,exist_ok=True)
     persist_session(session)
@@ -635,7 +636,7 @@ def form_schema(application_id: str,payload:SchemaRequest):
     text="\n\n".join(d.get("extracted_text","") for d in docs)
     fields,sections=infer_schema(text)
     session["fields"]=fields;session["sections"]=sections;session["schema_version"]=int(session.get("schema_version",0))+1
-    return {"status":"ready","schema_version":session["schema_version"],"fields":fields,"sections":[{"name":s} if isinstance(s,str) else s for s in sections],"source":"demo" if fields==SAMPLE_FIELDS else ("gemini" if GEMINI_API_KEY else "text extraction"),"field_count":len(fields),"required_count":sum(f["required_state"]=="required_from_form" for f in fields),"review_count":sum(f["extraction_status"]=="needs_review" for f in fields)}
+    return {"status":"ready","schema_version":session["schema_version"],"fields":fields,"sections":[{"name":s} if isinstance(s,str) else s for s in sections],"source":"gemini" if fields and GEMINI_API_KEY else ("text extraction" if fields else "none"),"field_count":len(fields),"required_count":sum(f["required_state"]=="required_from_form" for f in fields),"review_count":sum(f["extraction_status"]=="needs_review" for f in fields)}
 
 
 @app.patch("/api/v1/fields/{field_id}")
@@ -670,8 +671,6 @@ def explain_field(field_id:str,payload:ExplainRequest,application_id:str):
 def save_answer(application_id:str,payload:AnswerRequest):
     session=app_for(application_id)
     field=next((f for f in session["fields"] if f["id"]==payload.field_id),None)
-    if not field:
-        field=next((f for f in SAMPLE_FIELDS if f["id"]==payload.field_id),None)
     if not field:raise HTTPException(404,detail=error_shape("field_not_found","The answer field could not be found."))
     answer={"field_id":payload.field_id,"value":payload.value[:2000],"normalized_value":payload.value[:2000],"language":payload.language,"status":"confirmed" if payload.confirmed else "suggested","origin":payload.origin,"confirmed_by_user":payload.confirmed,"confirmed_at":utc_now() if payload.confirmed else None,"updated_at":utc_now()}
     session["answers"][payload.field_id]=answer
@@ -684,7 +683,7 @@ def save_answer(application_id:str,payload:AnswerRequest):
 @app.post("/api/v1/applications/{application_id}/conversation")
 def conversation_turn(application_id:str,payload:ConversationRequest):
     session=app_for(application_id)
-    field=next((f for f in session["fields"] if f["id"]==payload.field_id),None) or next((f for f in SAMPLE_FIELDS if f["id"]==payload.field_id),None)
+    field=next((f for f in session["fields"] if f["id"]==payload.field_id),None)
     if not field:raise HTTPException(404,detail=error_shape("field_not_found","The current form question is no longer available."))
     user_turn={"id":uuid.uuid4().hex,"field_id":payload.field_id,"speaker":"user","text":payload.text[:2000],"language":payload.language,"created_at":utc_now()}
     session["conversation"].append(user_turn)
@@ -736,13 +735,13 @@ def evidence_match(application_id:str,document_ids:list[str]|None=None):
 @app.post("/api/v1/applications/{application_id}/validate")
 def validate(application_id:str,payload:ValidateRequest):
     session=app_for(application_id);issues=validation_for(session);session["issues"]=issues
-    return {"application_id":application_id,"issues":issues,"summary":{"total_fields":len(session["fields"] or SAMPLE_FIELDS),"completed_fields":sum(bool(a.get("value")) for a in session["answers"].values()),"missing_fields":sum(i["severity"]=="missing" and i["rule_id"]=="required" for i in issues),"needs_review":sum(i["severity"]=="needs_review" for i in issues),"invalid":sum(i["severity"]=="invalid" for i in issues),"confirmed":sum(bool(a.get("confirmed_by_user")) for a in session["answers"].values()),"open_issues":len(issues)},"is_approval_prediction":False}
+    return {"application_id":application_id,"issues":issues,"summary":{"total_fields":len(session["fields"]),"completed_fields":sum(bool(a.get("value")) for a in session["answers"].values()),"missing_fields":sum(i["severity"]=="missing" and i["rule_id"]=="required" for i in issues),"needs_review":sum(i["severity"]=="needs_review" for i in issues),"invalid":sum(i["severity"]=="invalid" for i in issues),"confirmed":sum(bool(a.get("confirmed_by_user")) for a in session["answers"].values()),"open_issues":len(issues)},"is_approval_prediction":False}
 
 
 @app.get("/api/v1/applications/{application_id}/readiness")
 def readiness(application_id:str):
     session=app_for(application_id);issues=validation_for(session);session["issues"]=issues
-    return {"application_id":application_id,"issues":issues,"answers":list(session["answers"].values()),"evidence":session["evidence"],"documents":[{k:v for k,v in d.items() if k not in {"storage_name","session_id","extracted_text"}} for d in session["documents"].values()],"summary":{"fields":len(session["fields"] or SAMPLE_FIELDS),"confirmed":sum(bool(a.get("confirmed_by_user")) for a in session["answers"].values()),"missing":sum(i["severity"]=="missing" for i in issues),"needs_review":sum(i["severity"]=="needs_review" for i in issues),"invalid":sum(i["severity"]=="invalid" for i in issues)},"disclaimer":"Operational checklist only. Not an approval prediction."}
+    return {"application_id":application_id,"issues":issues,"answers":list(session["answers"].values()),"evidence":session["evidence"],"documents":[{k:v for k,v in d.items() if k not in {"storage_name","session_id","extracted_text"}} for d in session["documents"].values()],"summary":{"fields":len(session["fields"]),"confirmed":sum(bool(a.get("confirmed_by_user")) for a in session["answers"].values()),"missing":sum(i["severity"]=="missing" for i in issues),"needs_review":sum(i["severity"]=="needs_review" for i in issues),"invalid":sum(i["severity"]=="invalid" for i in issues)},"disclaimer":"Operational checklist only. Not an approval prediction."}
 
 
 @app.post("/api/v1/applications/{application_id}/issues/{issue_id}/resolve")
@@ -774,9 +773,9 @@ def draw_draft(session:dict[str,Any],out:Path,include_warnings:bool=True):
     def safe(value:str)->str:
         return value if font_regular!="Helvetica" else value.encode("latin-1","replace").decode("latin-1")
     c=canvas.Canvas(str(out),pagesize=letter);width,height=letter;y=height-58
-    c.setFillColorRGB(.12,.17,.29);c.setFont(font_bold,16);c.drawString(48,y,safe("National Scholarship Application"));y-=20
-    c.setFillColorRGB(.43,.48,.58);c.setFont(font_regular,9);c.drawString(48,y,safe("Applicant answer sheet | Academic year 2026-27 | Draft for review"));y-=28
-    fields=session["fields"] or SAMPLE_FIELDS
+    c.setFillColorRGB(.12,.17,.29);c.setFont(font_bold,16);c.drawString(48,y,safe(session.get("title") or "Application answer sheet"));y-=20
+    c.setFillColorRGB(.43,.48,.58);c.setFont(font_regular,9);c.drawString(48,y,safe("Applicant answer sheet | Draft for review"));y-=28
+    fields=session["fields"]
     for heading,items in [("Applicant information",fields[:5]),("Family and education",fields[5:8]),("Other form fields",fields[8:])]:
         c.setFillColorRGB(.94,.95,.98);c.roundRect(45,y-7,width-90,20,4,fill=1,stroke=0);c.setFillColorRGB(.25,.31,.44);c.setFont(font_bold,9);c.drawString(54,y,safe(heading.upper()));y-=27
         for field in items:
@@ -820,7 +819,7 @@ def download_draft(application_id:str,draft_id:str):
 def export_answers(application_id:str):
     session=app_for(application_id)
     rows=[]
-    for field in session["fields"] or SAMPLE_FIELDS:
+    for field in session["fields"]:
         ans=session["answers"].get(field["id"],{})
         rows.append({"field_id":field["id"],"label":field["label_original"],"value":ans.get("value"),"status":ans.get("status","missing"),"origin":ans.get("origin"),"evidence":ans.get("evidence",[])})
     return {"application_id":application_id,"title":session["title"],"answers":rows,"generated_at":utc_now(),"submitted":False}
