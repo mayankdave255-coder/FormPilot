@@ -24,13 +24,13 @@ python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 
 Create a PostgreSQL database, set its connection URL as `DATABASE_URL`, set a stable random `AUTH_SECRET_KEY` (at least 32 characters), and run `docker compose up --build -d`. In production the app refuses to start without PostgreSQL. Put the service behind HTTPS and route the public domain to port 8000. The browser and API must be same-origin (or behind a same-origin reverse proxy) for the session cookie to work.
 
-For a Render deployment, create a PostgreSQL database, then add its **internal database URL** as the web service's `DATABASE_URL` environment variable. Also set `APP_ENV=production`, `AUTH_SECRET_KEY`, and `COOKIE_SECURE=true`. Keep the database URL and signing key in the hosting provider's environment settings, never in GitHub or `.env.example`. The `/api/v1/health` response reports the active database backend and connection status.
+For the free portfolio deployment, keep the Render web service for hosting and use a Supabase Free project for PostgreSQL and file storage. The Render Free PostgreSQL database expires after 30 days. Supabase Free currently includes 500 MB database size and 1 GB file storage; inactive Free projects may pause after a week and can be restored. Stay within the quotas and do not upgrade or add a paid billing plan if the project must remain free. Keep the database and storage credentials only in Render's environment settings, never in GitHub or `.env.example`.
 
 Set `ALLOW_SIGNUP=false` after the intended accounts have been created if public account creation should close. Do not rotate `AUTH_SECRET_KEY` casually: doing so signs out all users. For deployment, set `CORS_ORIGINS` to the actual public origin if other origins are needed; avoid wildcard origins with authenticated workflows.
 
 ## Accounts and storage
 
-Users have email/password accounts. Passwords are stored as salted PBKDF2-SHA256 hashes. The server issues an HTTP-only, SameSite=Lax cookie with a 14-day expiry. Invalid login attempts are temporarily throttled. Accounts, login attempts, application sessions, and the account document library index are stored in the configured SQL database (PostgreSQL in production; SQLite locally). Sessions and library entries are restored from the database after a restart. In production, set `OBJECT_STORAGE_BACKEND=s3` and configure a private S3-compatible bucket (Cloudflare R2 is supported) for original uploads and generated drafts. PostgreSQL stores document metadata and extracted OCR text. Local development defaults to the `FORMPILOT_DATA_DIR` filesystem adapter.
+Users have email/password accounts. Passwords are stored as salted PBKDF2-SHA256 hashes. The server issues an HTTP-only, SameSite=Lax cookie with a 14-day expiry. Invalid login attempts are temporarily throttled. Accounts, login attempts, application sessions, and the account document library index are stored in the configured SQL database (PostgreSQL in production; SQLite locally). Sessions and library entries are restored from the database after a restart. In production, set `OBJECT_STORAGE_BACKEND=s3` and configure a private S3-compatible bucket (Supabase Storage is supported) for original uploads and generated drafts. PostgreSQL stores document metadata and extracted OCR text. Local development defaults to the `FORMPILOT_DATA_DIR` filesystem adapter.
 
 The document library stores extracted OCR text in the configured SQL database for exact field-label suggestions; those suggestions are unconfirmed and require review. This is still a hackathon MVP, not a production document vault. It does not currently include email verification, password reset, MFA, session/device revocation, a scheduled cleanup worker, encrypted-at-rest storage, a durable background queue, or audited recovery. Signup is open by default. Use synthetic documents for demos. Do not upload real identity, bank, or certificate data to an unreviewed deployment.
 
@@ -40,9 +40,16 @@ The app starts with an empty workspace and does not invent a form or required do
 
 Copy `.env.example` to `.env` for the available settings. Missing AI keys do not prevent manual completion. A schema or answer extracted from a document is a suggestion and must be reviewed. Readiness results do not verify documents, determine eligibility, or predict approval.
 
-### Render with Cloudflare R2
+### Render hosting with Supabase Free
 
-Keep the Render web service and PostgreSQL database. Create a private R2 bucket and an R2 API token limited to that bucket with Object Read & Write access. Set `OBJECT_STORAGE_BACKEND=s3`, `S3_BUCKET`, `S3_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `S3_REGION=auto`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` in the Render web service environment. Do not enable public bucket access. The API serves files only after account authentication. In production, uploads and draft creation return an error until S3-compatible storage is configured; they never silently write to Render's ephemeral filesystem.
+1. Create a Supabase Free project and a **private** Storage bucket. Keep the project on the Free plan; its current quotas are 500 MB for the database and 1 GB for files (individual uploads are already capped to 20 MB by FormPilot).
+2. In Supabase Storage settings, enable the S3 protocol and generate server-side S3 credentials. Supabase's S3 credentials have broad access, so store them only in Render environment variables and never expose them to the browser.
+3. Back up the current Render PostgreSQL database before changing `DATABASE_URL`. A new Supabase database starts empty; migrate the existing SQL data if you need to keep the current account. Files already lost from Render's ephemeral filesystem cannot be migrated and must be uploaded again.
+4. In the Render web service, set `DATABASE_URL` to the Supabase PostgreSQL **Session pooler** connection string (use the pooler for IPv4-compatible connectivity), plus `APP_ENV=production`, `AUTH_SECRET_KEY`, and `COOKIE_SECURE=true`.
+5. Set `OBJECT_STORAGE_BACKEND=s3`, `S3_BUCKET` to the private bucket name, `S3_ENDPOINT_URL` to the Supabase S3 endpoint from Storage settings, and `S3_REGION`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` to the values shown there.
+6. Deploy and verify `/api/v1/health`, then test an upload and retrieval. Never make the bucket public. The API checks account access before serving files.
+
+Supabase Free projects may pause after a week of low activity. A paused project can be restored from the dashboard, and Supabase currently provides a one-year restore window. Free quotas are capped: usage beyond them will require deleting files or remaining unavailable until usage falls; do not upgrade the project if staying free is required. Keep a separate copy of important demo documents because this free tier is for hobby projects, not archival storage.
 
 ## Tests
 

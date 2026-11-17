@@ -26,19 +26,19 @@ FormPilot is an authenticated assistant for filling forms. A user uploads a form
 
 - The app is deployed on Render and uses Render PostgreSQL for structured data. The Render dashboard screenshot (2026-11-18) shows the current database on the Free compute plan; Render warns that free databases expire after 30 days and are intended for testing/prototyping.
 - Render's web service filesystem is ephemeral unless a paid persistent disk is attached. R2 was selected as the first persistent file-storage approach and its integration is already in the repository.
-- The user does not want to activate Cloudflare R2 because the setup presents a billing subscription and possible overage charges.
-- Recommended next alternative: after moving the database off its expiring Free plan, store uploaded file bytes in Render PostgreSQL (for example, a `BYTEA` column) so files survive web-service restarts without a separate object-storage subscription. This is appropriate for a small MVP, but makes the database grow with files and should be revisited if usage grows. Confirm the database's available storage/quota and the paid monthly cost before moving production uploads.
-- This PostgreSQL file-storage change is a proposal only; it has not been implemented. The current Free database is not suitable for long-term data because it expires after 30 days. Do not ask the user to enable R2 unless they later choose it.
+- The user wants strictly free services for a small portfolio project and does not want Cloudflare R2 or any provider that requires paid/usage billing.
+- Recommended deployment: keep the Render web service, move PostgreSQL from the expiring Render Free database to Supabase Free, and use Supabase Storage Free for private file objects. The existing S3 adapter can connect to Supabase Storage's S3-compatible endpoint.
+- Supabase Free currently includes 500 MB database size and 1 GB file storage. The existing FormPilot upload cap is 20 MB per file. Supabase may pause Free projects after seven days of low activity; a paused project can be restored, with a one-year restore window. This fits a portfolio demo, but is not archival storage or a production reliability guarantee.
+- This Supabase setup is not yet configured in the user's accounts. The user must create the Free project, private bucket and server-side S3 credentials, then set Render environment variables. Do not select a paid plan or request billing credentials.
 - Existing files lost from Render's ephemeral filesystem cannot be recovered; users will need to re-upload them after durable storage is deployed.
 
 ## Next implementation steps
 
-1. Replace the production S3 requirement with a PostgreSQL-backed file store using the existing database connection; preserve the local development adapter if useful.
-2. Keep object metadata, ownership checks, and deletion behavior aligned with existing gallery/application access controls.
-3. Update `.env.example`, README, health reporting, and deployment notes so Render no longer needs R2 credentials for file persistence.
-4. Check Render PostgreSQL storage limits and costs against expected uploads; set upload size/retention limits appropriate to the database capacity.
+1. Create the Supabase Free project and private Storage bucket. Back up the current Render PostgreSQL data, then migrate it if the existing account should be preserved; the new Supabase database starts empty. Existing files lost from Render's ephemeral filesystem must be re-uploaded.
+2. Move the app database to Supabase PostgreSQL and retain account ownership checks for all files. The server-side Supabase S3 credentials bypass Supabase Storage RLS, so never expose them to the browser.
+3. Deploy, verify health and file persistence, then re-upload any files previously lost from Render's ephemeral filesystem.
+4. Stay within the Supabase Free quotas and periodically open/use the project to reduce the chance of an inactivity pause. Keep personal copies of files that must not be lost.
 5. Push the code and documentation updates to the connected GitHub repository, as requested.
-6. After deployment, verify health and persistence across a Render restart, then re-upload any files previously lost.
 
 ## Product and production follow-ups
 

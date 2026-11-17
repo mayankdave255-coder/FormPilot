@@ -37,7 +37,8 @@ def init_storage(local_root: Path) -> None:
         "s3", endpoint_url=endpoint, region_name=region,
         aws_access_key_id=os.getenv("S3_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY"),
-        config=Config(signature_version="s3v4", retries={"max_attempts": 3, "mode": "standard"}),
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"},
+                      retries={"max_attempts": 3, "mode": "standard"}),
     )
     print(f"[formpilot] file_storage_backend=s3 bucket={_bucket}")
 
